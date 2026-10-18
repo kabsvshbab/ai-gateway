@@ -7,7 +7,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import dev.aigateway.R
 import dev.aigateway.core.Log
 import dev.aigateway.provider.Providers
 import dev.aigateway.provider.WebViewPool
@@ -53,23 +52,19 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Start gateway
         startService(Intent(this, GatewayService::class.java))
 
-        // Request overlay permission
         if (!Settings.canDrawOverlays(this)) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
         }
 
-        // Setup login buttons for each provider
         setupProviders()
 
-        // Log listener
         Log.listener = {
             runOnUiThread {
                 val sb = StringBuilder()
                 for (e in Log.entries.takeLast(50)) {
-                    sb.append("[${e.time}] ${e.level}: ${e.msg}
+                    sb.append("[" + e.time + "] " + e.level + ": " + e.msg + "
 ")
                 }
                 logView.text = sb.toString()
@@ -84,14 +79,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus() {
         val sb = StringBuilder()
-        sb.append("HTTP: ${dev.aigateway.core.Settings.bindAddress}:${dev.aigateway.core.Settings.port}
+        sb.append("HTTP: " + dev.aigateway.core.Settings.bindAddress + ":" + dev.aigateway.core.Settings.port + "
 ")
-        sb.append("Providers: ${Providers.ALL.size}
+        sb.append("Providers: " + Providers.ALL.size + "
 
 ")
         for (def in Providers.ALL) {
             val loggedIn = WebViewPool.isLoggedIn(def)
-            sb.append("${def.label}: ${if (loggedIn) "Logged In" else "Not Logged In"}
+            val status = if (loggedIn) "Logged In" else "Not Logged In"
+            sb.append(def.label + ": " + status + "
 ")
         }
         statusText.text = sb.toString()
@@ -99,7 +95,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupProviders() {
         for (def in Providers.ALL) {
-            Log.i("Provider ${def.label}: ${def.loginUrl}")
+            Log.i("Provider " + def.label + ": " + def.loginUrl)
         }
     }
 }
