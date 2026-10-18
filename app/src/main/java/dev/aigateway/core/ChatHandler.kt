@@ -30,18 +30,13 @@ object ChatHandler {
                 handleChat(body, out)
             }
             method == "OPTIONS" -> {
-                val opt = "HTTP/1.1 200 OK
-" +
-                    "Access-Control-Allow-Origin: *
-" +
-                    "Access-Control-Allow-Headers: *
-" +
-                    "Access-Control-Allow-Methods: POST, GET, OPTIONS
-" +
-                    "Connection: close
-
-"
-                out.write(opt.toByteArray())
+                val sb = StringBuilder()
+                sb.append("HTTP/1.1 200 OK\r\n")
+                sb.append("Access-Control-Allow-Origin: *\r\n")
+                sb.append("Access-Control-Allow-Headers: *\r\n")
+                sb.append("Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n")
+                sb.append("Connection: close\r\n\r\n")
+                out.write(sb.toString().toByteArray())
             }
             else -> {
                 HttpServer.respondJson(out, 404, OpenAi.error("not_found", "invalid_request_error", "Unknown path: " + method + " " + path))

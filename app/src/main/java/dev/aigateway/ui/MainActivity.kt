@@ -64,8 +64,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 val sb = StringBuilder()
                 for (e in Log.entries.takeLast(50)) {
-                    sb.append("[" + e.time + "] " + e.level + ": " + e.msg + "
-")
+                    sb.append("[").append(e.time).append("] ").append(e.level).append(": ").append(e.msg).appendLine()
                 }
                 logView.text = sb.toString()
             }
@@ -79,16 +78,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus() {
         val sb = StringBuilder()
-        sb.append("HTTP: " + dev.aigateway.core.Settings.bindAddress + ":" + dev.aigateway.core.Settings.port + "
-")
-        sb.append("Providers: " + Providers.ALL.size + "
-
-")
+        sb.append("HTTP: ").append(dev.aigateway.core.Settings.bindAddress).append(":").append(dev.aigateway.core.Settings.port).appendLine()
+        sb.append("Providers: ").append(Providers.ALL.size).appendLine().appendLine()
         for (def in Providers.ALL) {
             val loggedIn = WebViewPool.isLoggedIn(def)
             val status = if (loggedIn) "Logged In" else "Not Logged In"
-            sb.append(def.label + ": " + status + "
-")
+            sb.append(def.label).append(": ").append(status).appendLine()
         }
         statusText.text = sb.toString()
     }

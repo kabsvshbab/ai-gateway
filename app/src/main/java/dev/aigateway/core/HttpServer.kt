@@ -83,6 +83,8 @@ class HttpServer(
     }
 
     companion object {
+        private const val CRLF = "\r\n"
+
         fun respondJson(out: OutputStream, status: Int, json: org.json.JSONObject) {
             val body = json.toString().toByteArray()
             val statusText = when (status) {
@@ -96,54 +98,39 @@ class HttpServer(
                 504 -> "Gateway Timeout"
                 else -> "Unknown"
             }
-            val headerStr = "HTTP/1.1 " + status + " " + statusText + "
-"
-                + "Content-Type: application/json
-"
-                + "Content-Length: " + body.size + "
-"
-                + "Access-Control-Allow-Origin: *
-"
-                + "Access-Control-Allow-Headers: *
-"
-                + "Access-Control-Allow-Methods: *
-"
-                + "Connection: close
-"
-                + "
-"
-            out.write(headerStr.toByteArray())
+            val sb = StringBuilder()
+            sb.append("HTTP/1.1 ").append(status).append(" ").append(statusText).append(CRLF)
+            sb.append("Content-Type: application/json").append(CRLF)
+            sb.append("Content-Length: ").append(body.size).append(CRLF)
+            sb.append("Access-Control-Allow-Origin: *").append(CRLF)
+            sb.append("Access-Control-Allow-Headers: *").append(CRLF)
+            sb.append("Access-Control-Allow-Methods: *").append(CRLF)
+            sb.append("Connection: close").append(CRLF)
+            sb.append(CRLF)
+            out.write(sb.toString().toByteArray())
             out.write(body)
         }
 
         fun respondSseHeaders(out: OutputStream) {
-            val headers = "HTTP/1.1 200 OK
-"
-                + "Content-Type: text/event-stream
-"
-                + "Cache-Control: no-cache
-"
-                + "Connection: close
-"
-                + "Access-Control-Allow-Origin: *
-"
-                + "
-"
-            out.write(headers.toByteArray())
+            val sb = StringBuilder()
+            sb.append("HTTP/1.1 200 OK").append(CRLF)
+            sb.append("Content-Type: text/event-stream").append(CRLF)
+            sb.append("Cache-Control: no-cache").append(CRLF)
+            sb.append("Connection: close").append(CRLF)
+            sb.append("Access-Control-Allow-Origin: *").append(CRLF)
+            sb.append(CRLF)
+            out.write(sb.toString().toByteArray())
             out.flush()
         }
 
         fun respondSseChunk(out: OutputStream, json: org.json.JSONObject) {
-            out.write(("data: " + json.toString() + "
-
-").toByteArray())
+            val data = "data: " + json.toString() + "\n\n"
+            out.write(data.toByteArray())
             out.flush()
         }
 
         fun respondSseDone(out: OutputStream) {
-            out.write("data: [DONE]
-
-".toByteArray())
+            out.write("data: [DONE]\n\n".toByteArray())
             out.flush()
         }
     }
