@@ -14,7 +14,7 @@
         android:name="dev.aigateway.core.App"
         android:allowBackup="false"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@style/AppTheme">
         <activity android:name="dev.aigateway.ui.MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
