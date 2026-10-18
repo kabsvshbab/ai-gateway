@@ -9,7 +9,6 @@ import java.io.OutputStream
 object ChatHandler {
 
     fun handle(method: String, path: String, headers: Map<String, String>, body: String, out: OutputStream) {
-        // Check API key
         val key = Settings.apiKey
         if (key.isNotEmpty()) {
             val auth = headers["authorization"] ?: ""
@@ -31,16 +30,21 @@ object ChatHandler {
                 handleChat(body, out)
             }
             method == "OPTIONS" -> {
-                out.write("""HTTP/1.1 200 OK
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Headers: *
-Access-Control-Allow-Methods: POST, GET, OPTIONS
-Connection: close
+                val opt = "HTTP/1.1 200 OK
+" +
+                    "Access-Control-Allow-Origin: *
+" +
+                    "Access-Control-Allow-Headers: *
+" +
+                    "Access-Control-Allow-Methods: POST, GET, OPTIONS
+" +
+                    "Connection: close
 
-""".toByteArray())
+"
+                out.write(opt.toByteArray())
             }
             else -> {
-                HttpServer.respondJson(out, 404, OpenAi.error("not_found", "invalid_request_error", "Unknown path: $method $path"))
+                HttpServer.respondJson(out, 404, OpenAi.error("not_found", "invalid_request_error", "Unknown path: " + method + " " + path))
             }
         }
     }
@@ -60,16 +64,21 @@ Connection: close
                 return
             }
 
-            val providerId = Providers.allModels.find { it.first == modelId }?.second
-                ?: run {
-                    HttpServer.respondJson(out, 400, OpenAi.error("invalid_request", "invalid_request_error", "Unknown model '$modelId'."))
-                    return
-                }
+            val providerEntry = Providers.allModels.find { it.first == modelId }
+            if (providerEntry == null) {
+                HttpServer.respondJson(out, 400, OpenAi.error("invalid_request", "invalid_request_error", "Unknown model '" + modelId + "'."))
+                return
+            }
+            val providerId = providerEntry.second
 
-            val def = Providers.byId[providerId]!!
+            val def = Providers.byId[providerId]
+            if (def == null) {
+                HttpServer.respondJson(out, 500, OpenAi.error("internal_error", "internal_error", "Provider not found: " + providerId))
+                return
+            }
 
             if (!WebViewPool.isLoggedIn(def)) {
-                HttpServer.respondJson(out, 503, OpenAi.error("not_logged_in", "upstream_error", "Please log in to ${def.label} first."))
+                HttpServer.respondJson(out, 503, OpenAi.error("not_logged_in", "upstream_error", "Please log in to " + def.label + " first."))
                 return
             }
 
@@ -126,12 +135,11 @@ Connection: close
                 HttpServer.respondJson(out, 200, OpenAi.fullResponse(id, created, modelId, fullText.toString()))
             }
         } catch (e: Exception) {
-            Log.e("Chat error: ${e.message}")
+            Log.e("Chat error: " + e.message)
             HttpServer.respondJson(out, 500, OpenAi.error("internal_error", "internal_error", e.message ?: "Unknown error"))
         }
     }
 
-    /** Build provider-specific payload from OpenAI messages. */
     private fun buildPayload(providerId: String, modelId: String, prompt: String, messages: org.json.JSONArray): JSONObject {
         return when (providerId) {
             "doubao" -> JSONObject()
