@@ -18,7 +18,6 @@ import dev.aigateway.core.Log
 import dev.aigateway.core.ProviderDef
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -54,10 +53,9 @@ object WebViewPool {
         handler.post {
             for ((id, wv) in webViews) {
                 try {
-                    (wv.parent as? WindowManager)?.removeView(wv)
+                    (wv.parent as? android.view.ViewManager)?.removeView(wv)
                 } catch (_: Exception) {}
                 wv.destroy()
-                Log.i("WebView $id destroyed")
             }
             webViews.clear()
             readyFlags.clear()
@@ -70,8 +68,8 @@ object WebViewPool {
     fun isLoggedIn(def: ProviderDef): Boolean {
         val cookie = getCookie(def) ?: return false
         for (name in def.sessionCookieNames) {
-            if (cookie.contains("$name=")) {
-                val idx = cookie.indexOf("$name=")
+            if (cookie.contains(name + "=")) {
+                val idx = cookie.indexOf(name + "=")
                 val end = cookie.indexOf(';', idx)
                 val value = if (end > 0) cookie.substring(idx + name.length + 1, end)
                             else cookie.substring(idx + name.length + 1)
@@ -86,44 +84,57 @@ object WebViewPool {
     }
 
     /**
-     * Sends a request through the provider's WebView.
-     * Returns chunks via the callback; blocks until '__DONE__' or timeout.
+     * Streaming send: calls onChunk for each piece of data as it arrives.
+     * Returns null on success, or an error message on failure.
+     * The caller should treat onChunk == null as end-of-stream.
      */
-    fun sendRequest(def: ProviderDef, payloadJson: String, timeoutMs: Long = 300_000L): List<String> {
-        val wv = webViews[def.id] ?: return listOf("__ERROR__:WebView not started for ${def.id}")
-        val requestId = "req_${System.nanoTime()}"
+    fun sendRequestStream(
+        def: ProviderDef,
+        payloadJson: String,
+        timeoutMs: Long,
+        onChunk: (String) -> Unit
+    ): String? {
+        val wv = webViews[def.id] ?: return "WebView not started for " + def.id
+        if (readyFlags[def.id] != true) return "WebView not ready for " + def.id
+
+        val requestId = "req_" + System.nanoTime()
         val queue = ArrayBlockingQueue<String>(8192)
         pendingChunks[requestId] = queue
 
-        // Inject hook if needed
-        if (readyFlags[def.id] != true) {
-            pendingChunks.remove(requestId)
-            return listOf("__ERROR__:WebView not ready for ${def.id}")
-        }
+        val js = "window.__aigwSend && __aigwSend(" +
+            org.json.JSONObject.quote(def.apiUrl) + ", " +
+            org.json.JSONObject.quote(payloadJson) + ", " +
+            org.json.JSONObject.quote(requestId) + ")"
 
-        // Call JS
-        val js = "window.__aigwSend && __aigwSend(${org.json.JSONObject.quote(def.apiUrl)}, ${org.json.JSONObject.quote(payloadJson)}, ${org.json.JSONObject.quote(requestId)})"
         handler.post {
             try {
                 wv.evaluateJavascript(js, null)
             } catch (e: Exception) {
-                queue.offer("__ERROR__:${e.message}")
+                queue.offer("__ERROR__:" + (e.message ?: "evaluateJavascript failed"))
             }
         }
 
-        val chunks = mutableListOf<String>()
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val chunk = queue.poll(5, TimeUnit.SECONDS) ?: continue
             when {
-                chunk == "__DONE__" -> { pendingChunks.remove(requestId); return chunks }
-                chunk.startsWith("__ERROR__:") -> { pendingChunks.remove(requestId); return listOf(chunk) }
-                chunk.startsWith("__HTTP_ERROR__:") -> { pendingChunks.remove(requestId); return listOf(chunk) }
-                else -> chunks.add(chunk)
+                chunk == "__DONE__" -> {
+                    pendingChunks.remove(requestId)
+                    return null
+                }
+                chunk.startsWith("__ERROR__:") -> {
+                    pendingChunks.remove(requestId)
+                    return chunk.removePrefix("__ERROR__:")
+                }
+                chunk.startsWith("__HTTP_ERROR__:") -> {
+                    pendingChunks.remove(requestId)
+                    return chunk
+                }
+                else -> onChunk(chunk)
             }
         }
         pendingChunks.remove(requestId)
-        return listOf("__ERROR__:timeout waiting for ${def.id}")
+        return "timeout waiting for " + def.id
     }
 
     fun cancelRequest(requestId: String) {
@@ -140,22 +151,18 @@ object WebViewPool {
                 settings.databaseEnabled = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                settings.userAgentString = settings.userAgentString
 
                 CookieManager.getInstance().setAcceptCookie(true)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
-                }
+                CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
 
                 wv.addJavascriptInterface(JsBridge(), "aigatewayHost")
 
                 wv.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         super.onPageFinished(view, url)
-                        // Inject the provider's hook script
                         view.evaluateJavascript(def.hookScript) { _ ->
                             readyFlags[def.id] = true
-                            Log.i("${def.label} WebView ready (loggedIn=${isLoggedIn(def)})")
+                            Log.i(def.label + " WebView ready (loggedIn=" + isLoggedIn(def) + ")")
                         }
                     }
 
@@ -167,7 +174,6 @@ object WebViewPool {
                 wv.webChromeClient = WebChromeClient()
                 wv.loadUrl(def.loginUrl)
 
-                // Attach as invisible overlay
                 val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 windowManager = wm
                 val params = WindowManager.LayoutParams(
@@ -185,9 +191,9 @@ object WebViewPool {
                 params.y = 0
                 wm.addView(wv, params)
                 webViews[def.id] = wv
-                Log.i("${def.label} WebView created: ${def.loginUrl}")
+                Log.i(def.label + " WebView created: " + def.loginUrl)
             } catch (e: Exception) {
-                Log.e("Failed to create WebView for ${def.id}: ${e.message}")
+                Log.e("Failed to create WebView for " + def.id + ": " + e.message)
             }
         }
     }

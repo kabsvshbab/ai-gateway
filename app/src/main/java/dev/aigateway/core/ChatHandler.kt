@@ -2,20 +2,13 @@ package dev.aigateway.core
 
 import dev.aigateway.provider.Providers
 import dev.aigateway.provider.WebViewPool
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStream
-import java.util.UUID
 
 /** Routes OpenAI-compatible requests to the appropriate provider. */
 object ChatHandler {
 
     fun handle(method: String, path: String, headers: Map<String, String>, body: String, out: OutputStream) {
-        if (method == "OPTIONS") {
-            HttpServer.respondOptions(out)
-            return
-        }
-
         val key = Settings.apiKey
         if (key.isNotEmpty()) {
             val auth = headers["authorization"] ?: ""
@@ -36,6 +29,9 @@ object ChatHandler {
             method == "POST" && path == "/v1/chat/completions" -> {
                 handleChat(body, out)
             }
+            method == "OPTIONS" -> {
+                HttpServer.respondOptions(out)
+            }
             else -> {
                 HttpServer.respondJson(out, 404, OpenAi.error("not_found", "invalid_request_error", "Unknown path: " + method + " " + path))
             }
@@ -46,10 +42,10 @@ object ChatHandler {
         try {
             val req = JSONObject(body)
             val messages = req.optJSONArray("messages")
-            if (messages == null) {
-                HttpServer.respondJson(out, 400, OpenAi.error("invalid_request", "invalid_request_error", "'messages' is required."))
-                return
-            }
+                ?: run {
+                    HttpServer.respondJson(out, 400, OpenAi.error("invalid_request", "invalid_request_error", "'messages' is required."))
+                    return
+                }
 
             val modelId = req.optString("model", "")
             if (modelId.isEmpty()) {
@@ -83,54 +79,44 @@ object ChatHandler {
             val created = System.currentTimeMillis() / 1000
 
             if (stream) {
+                // Real streaming: send each chunk as it arrives
                 HttpServer.respondSseHeaders(out)
                 HttpServer.respondSseChunk(out, OpenAi.chunkDelta(id, created, modelId, JSONObject().put("role", "assistant"), null))
-            }
 
-            val chunks = WebViewPool.sendRequest(def, payload.toString())
-            val fullText = StringBuilder()
-            var error: String? = null
-
-            for (chunk in chunks) {
-                if (chunk == "__DONE__") {
-                    continue
-                }
-                if (chunk.startsWith("__ERROR__:")) {
-                    error = chunk.removePrefix("__ERROR__:")
-                    break
-                }
-                if (chunk.startsWith("__HTTP_ERROR__:")) {
-                    error = chunk
-                    break
-                }
-                try {
-                    val obj = JSONObject(chunk)
-                    val delta = obj.optString("delta", "")
-                    if (delta.isNotEmpty()) {
-                        fullText.append(delta)
-                        if (stream) {
+                val error = WebViewPool.sendRequestStream(def, payload.toString(), 300_000L) { chunk ->
+                    try {
+                        val obj = JSONObject(chunk)
+                        val delta = obj.optString("delta", "")
+                        if (delta.isNotEmpty()) {
                             HttpServer.respondSseChunk(out, OpenAi.chunkDelta(id, created, modelId, JSONObject().put("content", delta), null))
                         }
-                    }
-                } catch (_: Exception) {
+                    } catch (_: Exception) {}
                 }
-            }
 
-            if (error != null) {
-                if (stream) {
-                    HttpServer.respondSseChunk(out, OpenAi.chunkDelta(id, created, modelId, JSONObject().put("content", ""), "stop"))
-                    HttpServer.respondSseDone(out)
-                } else {
-                    HttpServer.respondJson(out, 502, OpenAi.error("upstream_error", "upstream_error", error))
-                }
-                return
-            }
-
-            if (stream) {
                 HttpServer.respondSseChunk(out, OpenAi.chunkDelta(id, created, modelId, JSONObject().put("content", ""), "stop"))
                 HttpServer.respondSseDone(out)
+
+                if (error != null) {
+                    Log.e("Stream error for " + def.id + ": " + error)
+                }
             } else {
-                HttpServer.respondJson(out, 200, OpenAi.fullResponse(id, created, modelId, fullText.toString()))
+                // Non-streaming: collect all chunks, return complete response
+                val fullText = StringBuilder()
+                val error = WebViewPool.sendRequestStream(def, payload.toString(), 300_000L) { chunk ->
+                    try {
+                        val obj = JSONObject(chunk)
+                        val delta = obj.optString("delta", "")
+                        if (delta.isNotEmpty()) {
+                            fullText.append(delta)
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                if (error != null) {
+                    HttpServer.respondJson(out, 502, OpenAi.error("upstream_error", "upstream_error", error))
+                } else {
+                    HttpServer.respondJson(out, 200, OpenAi.fullResponse(id, created, modelId, fullText.toString()))
+                }
             }
         } catch (e: Exception) {
             Log.e("Chat error: " + e.message)
@@ -138,14 +124,14 @@ object ChatHandler {
         }
     }
 
-    private fun buildPayload(providerId: String, modelId: String, prompt: String, messages: JSONArray): JSONObject {
+    private fun buildPayload(providerId: String, modelId: String, prompt: String, messages: org.json.JSONArray): JSONObject {
         return when (providerId) {
             "doubao" -> JSONObject()
-                .put("messages", JSONArray().put(JSONObject()
+                .put("messages", org.json.JSONArray().put(JSONObject()
                     .put("content", JSONObject().put("text", prompt).toString())
                     .put("content_type", 2009)
-                    .put("attachments", JSONArray())
-                    .put("references", JSONArray())
+                    .put("attachments", org.json.JSONArray())
+                    .put("references", org.json.JSONArray())
                     .put("skill", JSONObject()
                         .put("skill_type", 3)
                         .put("skill_type_no_default", 3)
@@ -160,8 +146,8 @@ object ChatHandler {
                     .put("use_deep_think", false)
                     .put("use_auto_cot", false))
                 .put("evaluate_option", JSONObject().put("web_ab_params", ""))
-                .put("local_conversation_id", UUID.randomUUID().toString())
-                .put("local_message_id", UUID.randomUUID().toString())
+                .put("local_conversation_id", java.util.UUID.randomUUID().toString())
+                .put("local_message_id", java.util.UUID.randomUUID().toString())
 
             "deepseek" -> JSONObject()
                 .put("model", modelId)
@@ -170,19 +156,19 @@ object ChatHandler {
 
             "chatgpt" -> JSONObject()
                 .put("action", "next")
-                .put("messages", JSONArray().put(JSONObject()
-                    .put("id", UUID.randomUUID().toString())
+                .put("messages", org.json.JSONArray().put(JSONObject()
+                    .put("id", java.util.UUID.randomUUID().toString())
                     .put("role", "user")
-                    .put("content", JSONObject().put("content_type", "text").put("parts", JSONArray().put(prompt)))))
+                    .put("content", JSONObject().put("content_type", "text").put("parts", org.json.JSONArray().put(prompt)))))
                 .put("model", modelId)
-                .put("parent_message_id", UUID.randomUUID().toString())
+                .put("parent_message_id", java.util.UUID.randomUUID().toString())
                 .put("stream", true)
 
             "claude" -> JSONObject()
                 .put("conversation_id", "")
                 .put("message", JSONObject()
                     .put("role", "user")
-                    .put("content", JSONArray().put(JSONObject()
+                    .put("content", org.json.JSONArray().put(JSONObject()
                         .put("type", "text")
                         .put("text", prompt))))
                 .put("model", modelId)
@@ -191,7 +177,7 @@ object ChatHandler {
 
             else -> JSONObject()
                 .put("model", modelId)
-                .put("messages", JSONArray().put(JSONObject()
+                .put("messages", org.json.JSONArray().put(JSONObject()
                     .put("role", "user")
                     .put("content", prompt)))
                 .put("stream", true)

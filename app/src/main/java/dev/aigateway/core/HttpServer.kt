@@ -159,6 +159,16 @@ class HttpServer(
             out.write(sb.toString().toByteArray())
         }
 
+        fun respondOptions(out: OutputStream) {
+            val sb = StringBuilder()
+            sb.append("HTTP/1.1 200 OK").append(CRLF)
+            sb.append("Access-Control-Allow-Origin: *").append(CRLF)
+            sb.append("Access-Control-Allow-Headers: *").append(CRLF)
+            sb.append("Access-Control-Allow-Methods: POST, GET, OPTIONS").append(CRLF)
+            sb.append("Connection: close").append(CRLF).append(CRLF)
+            out.write(sb.toString().toByteArray())
+        }
+
         fun respondSseHeaders(out: OutputStream) {
             val sb = StringBuilder()
             sb.append("HTTP/1.1 200 OK").append(CRLF)
