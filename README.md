@@ -50,3 +50,4 @@ GitHub Actions builds APK on every push to main.
 ## Disclaimer
 
 For personal use only. Respect each AI service's Terms of Service.
+# Trigger rebuild Sun Oct 18 04:30:54 UTC 2026
