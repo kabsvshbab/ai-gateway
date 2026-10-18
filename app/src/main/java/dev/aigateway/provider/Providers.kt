@@ -4,20 +4,29 @@ import dev.aigateway.core.ProviderDef
 
 /**
  * Registry of all supported web AI providers.
- * Hook scripts follow the doubao-gateway pattern: the page context performs
- * fetch() with credentials:'include', streaming chunks back through the
- * JavascriptInterface bridge `aigatewayHost.onChunk(requestId, data)`.
+ * Hook scripts: the page context performs fetch() with credentials: 'include',
+ * streaming chunks back through the JavascriptInterface bridge
+ * `aigatewayHost.onChunk(requestId, data)`.
  */
 object Providers {
 
-    /** Generic hook: posts [payload] to the provider apiUrl, streams SSE data lines. */
-    private fun genericHook(extractDelta: String) = """
+    private const val DELTA_PLACEHOLDER = "__DELTA__"
+
+    /**
+     * JS template (Kotlin raw string, so nothing is escaped by Kotlin).
+     * The JS side builds LF/CR with String.fromCharCode, so there are no backslash escapes at all.
+     * [DELTA_PLACEHOLDER] is replaced with the provider's delta-extractor function.
+     * This must stay declared before [ALL], because [ALL] uses it during initialisation.
+     */
+    private val HOOK_TEMPLATE: String = """
 (function () {
   if (window.__aigwHooked) return;
   window.__aigwHooked = true;
   window.__aigwAbort = {};
   window.__aigwSend = async function (url, payloadJson, requestId) {
     var bridge = window.aigatewayHost;
+    var LF = String.fromCharCode(10);
+    var CR = String.fromCharCode(13);
     function send(d) { try { bridge.onChunk(requestId, d); } catch (e) {} }
     try {
       var res = await fetch(url, {
@@ -39,15 +48,15 @@ object Providers {
         if (chunk.done) break;
         buf += dec.decode(chunk.value, { stream: true });
         var idx;
-        while ((idx = buf.indexOf('\n')) >= 0) {
+        while ((idx = buf.indexOf(LF)) >= 0) {
           var line = buf.slice(0, idx); buf = buf.slice(idx + 1);
-          if (line.charAt(line.length - 1) === '\r') line = line.slice(0, -1);
+          if (line.charAt(line.length - 1) === CR) line = line.slice(0, -1);
           if (line.indexOf('data:') !== 0) continue;
           var data = line.slice(5).trim();
           if (!data || data === '[DONE]' || data === '{}') continue;
           try {
             var obj = JSON.parse(data);
-            var delta = (""" + extractDelta + "")(obj);
+            var delta = (__DELTA__)(obj);
             if (delta) send(JSON.stringify({ delta: delta }));
           } catch (e) {}
         }
@@ -60,7 +69,12 @@ object Providers {
     delete window.__aigwAbort[requestId];
   };
 })();
-""".trimIndent()
+"""
+
+    /** Generic hook: posts the payload to the provider apiUrl and streams SSE data lines. */
+    private fun genericHook(extractDelta: String): String {
+        return HOOK_TEMPLATE.replace(DELTA_PLACEHOLDER, extractDelta).trimIndent()
+    }
 
     val ALL: List<ProviderDef> = listOf(
         ProviderDef(
@@ -162,9 +176,9 @@ object Providers {
             sessionCookieNames = listOf("hy_token", "hy_source"),
             modelIds = listOf("hunyuan", "deepseek-r1"),
             hookScript = genericHook("function(o){return o.choices&&o.choices[0]&&o.choices[0].delta&&o.choices[0].delta.content||''}")
-        ),
+        )
     )
 
-    val byId = ALL.associateBy { it.id }
+    val byId: Map<String, ProviderDef> = ALL.associateBy { it.id }
     val allModels: List<Pair<String, String>> = ALL.flatMap { p -> p.modelIds.map { it to p.id } }
 }

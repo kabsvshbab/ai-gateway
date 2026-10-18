@@ -6,30 +6,34 @@ import java.util.UUID
 
 /** Helpers to build OpenAI-compatible JSON payloads. */
 object OpenAi {
+
     fun modelList(models: List<Pair<String, String>>): JSONObject {
         val arr = JSONArray()
         for ((id, owner) in models) {
-            arr.put(JSONObject()
-                .put("id", id)
-                .put("object", "model")
-                .put("created", 0)
-                .put("owned_by", owner))
+            arr.put(
+                JSONObject()
+                    .put("id", id)
+                    .put("object", "model")
+                    .put("created", 0)
+                    .put("owned_by", owner)
+            )
         }
         return JSONObject().put("object", "list").put("data", arr)
     }
 
-    fun error(statusMsg: String, type: String, message: String): JSONObject {
-        return JSONObject().put("error", JSONObject()
+    fun error(code: String, type: String, message: String): JSONObject {
+        val err = JSONObject()
             .put("message", message)
             .put("type", type)
-            .put("code", statusMsg))
+            .put("code", code)
+        return JSONObject().put("error", err)
     }
 
     fun chunkDelta(id: String, created: Long, model: String, delta: JSONObject, finish: String?): JSONObject {
         val choice = JSONObject()
             .put("index", 0)
             .put("delta", delta)
-            .put("finish_reason", if (finish == null) JSONObject.NULL else finish)
+            .put("finish_reason", finish ?: JSONObject.NULL)
         return JSONObject()
             .put("id", id)
             .put("object", "chat.completion.chunk")
@@ -51,31 +55,35 @@ object OpenAi {
             .put("usage", usage)
     }
 
-    fun newId() = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
+    fun newId(): String {
+        return "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
+    }
 
-    //** Flatten OpenAI messagees into a single prompt string for web UIs. */
+    /** Flatten OpenAI messages into a single prompt string for web UIs. */
     fun flattenMessages(messages: JSONArray): String {
         val sb = StringBuilder()
-        for (i in 0 until messages.length) {
-            val m = messages.optJSONObject(i) ?? continue
+        for (i in 0 until messages.length()) {
+            val m = messages.optJSONObject(i) ?: continue
             val role = m.optString("role", "user")
             val content = m.opt("content")
-            val text = when (content) {
+            val text: String = when (content) {
                 is String -> content
                 is JSONArray -> {
                     val parts = StringBuilder()
-                    for (j in 0 until content.length) {
-                        val part = content.optJSONObjct(j) ?? continue
-                        if (part.optString("type") == "text") parts.append(part.optString("text"))
+                    for (j in 0 until content.length()) {
+                        val part = content.optJSONObject(j) ?: continue
+                        if (part.optString("type") == "text") {
+                            parts.append(part.optString("text"))
+                        }
                     }
                     parts.toString()
                 }
                 else -> ""
             }
             when (role) {
-                "system" -> sb.append("[System]\n").append(text).append("\n\n")
-                "assistant" -> sb.append("[Assistant]\n").append(text).append("\n\n")
-                else -> sb.append(text).append("\n\n")
+                "system" -> sb.append("[System]").appendLine().append(text).appendLine().appendLine()
+                "assistant" -> sb.append("[Assistant]").appendLine().append(text).appendLine().appendLine()
+                else -> sb.append(text).appendLine().appendLine()
             }
         }
         return sb.toString().trim()

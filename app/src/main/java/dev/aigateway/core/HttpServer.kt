@@ -1,59 +1,86 @@
 package dev.aigateway.core
 
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/** Minimal HTTP/1.1 server for local OpenAI-compatible API. */
+/** Minimal HTTP/1.1 server for the local OpenAI-compatible API. */
 class HttpServer(
     private val port: Int,
     private val handler: (method: String, path: String, headers: Map<String, String>, body: String, out: OutputStream) -> Unit
 ) {
-    private var serverSocket: ServerSocket? = null
-    private var running = false
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var running = false
     private val executor: ExecutorService = Executors.newFixedThreadPool(8)
 
     fun start() {
         running = true
-        Thread({
-            try {
-                serverSocket = ServerSocket(port)
-                Log.i("HTTP server started on 127.0.0.1:" + port)
-                while (running) {
-                    val socket = serverSocket?.accept() ?: break
-                    executor.submit { handleConnection(socket) }
-                }
-            } catch (e: Exception) {
-                Log.e("HTTP server error: " + e.message)
-            }
-        }, "http-server").apply { isDaemon = true }.start()
+        val t = Thread({ serve() }, "http-server")
+        t.isDaemon = true
+        t.start()
     }
 
     fun stop() {
         running = false
-        try { serverSocket?.close() } catch (_: Exception) {}
+        try {
+            serverSocket?.close()
+        } catch (_: Exception) {
+        }
         executor.shutdown()
+    }
+
+    private fun serve() {
+        try {
+            // Bind only to the configured address (default 127.0.0.1), not to all interfaces.
+            val host = Settings.bindAddress
+            val ss = ServerSocket(port, 50, InetAddress.getByName(host))
+            serverSocket = ss
+            Log.i("HTTP server started on " + host + ":" + port)
+            while (running) {
+                val socket = ss.accept()
+                executor.execute { handleConnection(socket) }
+            }
+        } catch (e: Exception) {
+            if (running) {
+                Log.e("HTTP server error: " + e.message)
+            }
+        }
+    }
+
+    /** Reads one header line as bytes (LF = 10, CR = 13), so no escape sequences are needed. */
+    private fun readHttpLine(input: InputStream): String? {
+        val buf = ByteArrayOutputStream()
+        while (true) {
+            val b = input.read()
+            if (b < 0) {
+                return if (buf.size() == 0) null else buf.toString("ISO-8859-1")
+            }
+            if (b == 10) break
+            if (b != 13) buf.write(b)
+        }
+        return buf.toString("ISO-8859-1")
     }
 
     private fun handleConnection(socket: Socket) {
         try {
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val input = BufferedInputStream(socket.getInputStream())
             val out = socket.getOutputStream()
 
-            val requestLine = reader.readLine() ?: return
+            val requestLine = readHttpLine(input) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 3) return
             val method = parts[0]
             val path = parts[1].split("?")[0]
 
             val headers = mutableMapOf<String, String>()
-            var line: String?
             while (true) {
-                line = reader.readLine() ?: break
+                val line = readHttpLine(input) ?: break
                 if (line.isEmpty()) break
                 val idx = line.indexOf(':')
                 if (idx > 0) {
@@ -61,29 +88,37 @@ class HttpServer(
                 }
             }
 
+            // Content-Length is in bytes, so read bytes and decode as UTF-8 (needed for Chinese text).
             val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-            val body = if (contentLength > 0) {
-                val buf = CharArray(contentLength)
+            val body: String
+            if (contentLength > 0) {
+                val buf = ByteArray(contentLength)
                 var read = 0
                 while (read < contentLength) {
-                    val r = reader.read(buf, read, contentLength - read)
+                    val r = input.read(buf, read, contentLength - read)
                     if (r < 0) break
                     read += r
                 }
-                String(buf, 0, read)
-            } else ""
+                body = String(buf, 0, read, Charsets.UTF_8)
+            } else {
+                body = ""
+            }
 
             handler(method, path, headers, body, out)
             out.flush()
         } catch (e: Exception) {
             Log.e("Connection error: " + e.message)
         } finally {
-            try { socket.close() } catch (_: Exception) {}
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
         }
     }
 
     companion object {
-        private const val CRLF = "\r\n"
+        // CR (13) + LF (10), built from char codes so the source has no escape sequences.
+        private val CRLF: String = String(charArrayOf(13.toChar(), 10.toChar()))
 
         fun respondJson(out: OutputStream, status: Int, json: org.json.JSONObject) {
             val body = json.toString().toByteArray()
@@ -95,6 +130,7 @@ class HttpServer(
                 404 -> "Not Found"
                 500 -> "Internal Server Error"
                 502 -> "Bad Gateway"
+                503 -> "Service Unavailable"
                 504 -> "Gateway Timeout"
                 else -> "Unknown"
             }
@@ -111,6 +147,18 @@ class HttpServer(
             out.write(body)
         }
 
+        fun respondOptions(out: OutputStream) {
+            val sb = StringBuilder()
+            sb.append("HTTP/1.1 200 OK").append(CRLF)
+            sb.append("Access-Control-Allow-Origin: *").append(CRLF)
+            sb.append("Access-Control-Allow-Headers: *").append(CRLF)
+            sb.append("Access-Control-Allow-Methods: POST, GET, OPTIONS").append(CRLF)
+            sb.append("Content-Length: 0").append(CRLF)
+            sb.append("Connection: close").append(CRLF)
+            sb.append(CRLF)
+            out.write(sb.toString().toByteArray())
+        }
+
         fun respondSseHeaders(out: OutputStream) {
             val sb = StringBuilder()
             sb.append("HTTP/1.1 200 OK").append(CRLF)
@@ -124,13 +172,16 @@ class HttpServer(
         }
 
         fun respondSseChunk(out: OutputStream, json: org.json.JSONObject) {
-            val data = "data: " + json.toString() + "\n\n"
-            out.write(data.toByteArray())
+            val sb = StringBuilder()
+            sb.append("data: ").append(json.toString()).appendLine().appendLine()
+            out.write(sb.toString().toByteArray())
             out.flush()
         }
 
         fun respondSseDone(out: OutputStream) {
-            out.write("data: [DONE]\n\n".toByteArray())
+            val sb = StringBuilder()
+            sb.append("data: [DONE]").appendLine().appendLine()
+            out.write(sb.toString().toByteArray())
             out.flush()
         }
     }
